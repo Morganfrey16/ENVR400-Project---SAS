@@ -1,0 +1,126 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE}
+
+library(sf)
+library(raster)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(osmdata)
+library(leaflet)
+library(raster)
+library(gstat)
+library(akima)
+
+
+```
+
+```{r, echo=FALSE}
+#read in data
+ds <- read_excel("Trip_1_Data.xlsx")
+
+#Filter columns
+ds <- subset(ds, select = c("Delta C (ug/m^3)", "Latitude", "Longitude", "3 Sec Moving Avg (Delta C ug/m^3)"))
+
+
+#Rename columns
+#Switching Lat and Long data 
+colnames(ds)[colnames(ds) == "Delta C (ug/m^3)"] <- "Delta_C"
+colnames(ds)[colnames(ds) == "3 Sec Moving Avg (Delta C ug/m^3)"] <- "Delta_C_avg"
+#colnames(ds)[colnames(ds) == "Longitude"] <- "latitude"
+#colnames(ds)[colnames(ds) == "Latitude"] <- "longitude"
+#colnames(ds)[colnames(ds) == "longitude"] <- "Longitude"
+#colnames(ds)[colnames(ds) == "latitude"] <- "Latitude"
+
+```
+
+```{r, echo=FALSE}
+# Load necessary libraries
+library(sp)
+library(raster)
+library(ggplot2)
+library(gstat)
+
+#Filters out Latitudes smaller than -123.80
+ds <- ds[ds$Longitude >= -123.80, ]
+
+# Converts the coordinates in the data set to spatial data 
+coordinates(ds) <- ~Longitude+Latitude 
+
+# Define the extent and create a raster grid
+# Make sure the x.range uses Longitude and y.range uses Latitude
+x.range <- range(ds@coords[,1])  # Computes Longitude range (first column)
+y.range <- range(ds@coords[,2])  # Computes Latitude range (second column)
+
+#Defines the extent of the raster grid using the min and max Lat and Lon values
+#Converts the 30m x 30m resolution to degrees 
+#111319.9 is an approximation of how many meters there are in a degree of latitude or longitude at the equator: Earth circumference / 360 degrees
+extent_raster <- raster(extent(x.range[1], x.range[2], y.range[1], y.range[2]), res=10/111319.9)
+
+# Create a set of points from the raster extent for interpolation
+# Converts it to a data frame 
+# Converts the df to spatial data/coordinates
+grid_points <- rasterToPoints(extent_raster)
+grid_points_df <- data.frame(grid_points)
+coordinates(grid_points_df) <- ~x+y  
+
+# Perform IDW interpolation using the grid points for Delta_C
+# formula ~ 1 meanse it is only considering Delta_C
+# newdata is where we want to interpolate the data
+# IDP = Inverse Distance Power which controls how the weigth decreases with distance. A value of 2.0 means that the influence of a point on the interpolation decreases as the square of the distance. 
+idw_output <- idw(formula = Delta_C_avg ~ 1, locations = ds, newdata = grid_points_df, idp = 2.0)
+
+# Convert IDW output to SpatialPixelsDataFrame and then to raster for plotting
+gridded(idw_output) <- TRUE # Converts the idw_output which is a SpatialPointsDataFrame, to a SpatialPixelDataFrame for plotting
+raster_interp <- raster(idw_output) # Converts it to the gridded data to a raster format
+
+# Set values less than X to NA to omit non-needed raster vals
+#raster_interp[raster_interp < 0.5] <- NA
+
+# Defines a color palette for the heatmap
+color_palette <- colorRampPalette(c( "darkslategray1", "darkturquoise", "blue", "coral", "coral1", "coral2", "coral3", "coral4", "red", "darkred"))
+
+# Plot the heatmap
+# zlim defines the range 
+plot(raster_interp, main="Heat Map of Delta C over Sechelt, BC", col=color_palette(100), xlab="Longitude", ylab="Latitude", zlim=c(0, 6))
+```
+
+```{r}
+# Note just load them in everytime for simplicity when editing different code chunks
+# Load the necessary libraries
+library(raster)   # For handling raster data
+library(leaflet)  # For interactive maps
+library(sp)       # For spatial data classes and methods
+
+# 'raster_interp' is our raster object
+# Uses an if statement with an "or" (||) condition 
+# proj4string(raster_interp) gets the coordinate reference system (CRS) information of raster_interp in a text format called proj4string
+# CRS() analyzes the proj4string and determines what it is saying. If it is not correct, it will return an NA val which is.na() will catch 
+# Second condition detemrines if it an empty string
+# crs(raster_interp) is about assigning a new CRS to raster_interp
+# CRS("+proj=longlat +datum=WGS84 +no_defs"): we're defining what the new CRS should be: +proj=longlat: This tells us the projection system is based on longitude and latitude. 
+# +datum=WGS84: This specifies the datum (a reference model of the Earth) used for the projection. WGS84 is a widely used global datum. 
+# +no_defs: means no additional definitions are needed for this CRS.
+
+if (is.na(CRS(proj4string(raster_interp))) || CRS(proj4string(raster_interp)) == "") {
+  crs(raster_interp) <- CRS("+proj=longlat +datum=WGS84 +no_defs")
+}
+
+# Plot the raster on a Leaflet map centered on Sechelt, BC
+# Define the color palette
+pal <- colorNumeric(palette = colorRampPalette(c("darkslategray1", "darkturquoise", "blue", "coral", "coral1", "coral2", "coral3", "coral4", "red", "darkred"))(100),
+                    domain = c(0,6),
+                    na.color = "transparent")
+
+leaflet() %>%
+  addTiles() %>%
+  addProviderTiles("Thunderforest.MobileAtlas") %>%
+  setView(lng = -123.7536, lat = 49.4742, zoom = 13) %>%
+  addRasterImage(raster_interp, opacity = 0.6, colors = pal)
+
+```
+
